@@ -1,0 +1,22 @@
+* What is this
+This is a fast out of process logger that uses a shared ring buffer. The idea is
+to just push values to another process that then formats and writes to a log.
+This keeps the main process/thread from wasting time formatting data or writing
+to a file.
+
+* The ring buffer
+The main communicaion channel is a single producer single consumer circular
+buffer that maps its data ring twice in adjacent pages (so the buffer must be a
+multiple of page size) and each side of the channel always sees the other party
+ahead of it so it knows how far it can write. When it goes past the actual
+capacity it resets its pointer and the local copy of the other side so it always
+looks like it is behind the other.
+
+* TODO
+- [ ] separate reader and writer parts
+- [ ] fix race conditiond around creation/opening
+- [ ] clear up api to be more pure and put loggigng wrapper around it
+- [ ] add 2MB huge page support
+- [ ] add tests
+- [ ] write disk logger exe
+- [ ] write key/val struct logger
