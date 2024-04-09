@@ -56,13 +56,12 @@ const SharedLine = extern struct {
 const LocalLine = extern struct {
     const _pad_size = cache_line_size - 8 * 3;
 
-    mark: u64,
     pos: u64,
     lim: u64,
     _pad: [_pad_size]u8 = [_]u8{0} ** _pad_size,
 
-    pub fn init(m: u64, p: u64, l: u64) @This() {
-        return .{ .mark = m, .pos = p, .lim = l };
+    pub fn init(p: u64, l: u64) @This() {
+        return .{ .pos = p, .lim = l };
     }
 };
 
@@ -174,8 +173,8 @@ pub const RingBuffer = extern struct {
         return RingBuffer{
             .base = header,
             .ro_loc = RoLine.init(low_addr, cap),
-            .wr_loc = LocalLine.init(wrpos, wrpos, wrlim),
-            .rd_loc = LocalLine.init(rdpos, rdpos, rdlim),
+            .wr_loc = LocalLine.init(wrpos, wrlim),
+            .rd_loc = LocalLine.init(rdpos, rdlim),
         };
     }
 
@@ -183,10 +182,6 @@ pub const RingBuffer = extern struct {
         var mem = try s.write_alloc(@intCast(buf.len));
         write_string(mem.ptr, buf);
         s.write_commit();
-    }
-
-    pub fn write_rollback(s: *This) void {
-        s.wr_loc.pos = s.wr_loc.mark;
     }
 
     pub fn write_alloc(s: *This, len: u64) RingError![]u8 {
@@ -221,20 +216,18 @@ pub const RingBuffer = extern struct {
         @memcpy(p + @sizeOf(EntrySize), str);
     }
 
-    pub fn _pull(s: *This, buf: []u8) !u64 {
-        const amt = std.rd_loc.lim - std.rd_loc.pos;
-        std.debug.assert(amt >= 0);
-        if (amt == 0)
-            return 0;
+    pub fn pull(s: *This, buf: []u8) !void {
+        // If there is any data is should be of at least entry size
+        // since partial records should never be committed
         std.debug.assert(amt >= @sizeOf(EntrySize));
-        const len = s.peek_next_size();
-        const rlen = len + @sizeOf(EntrySize);
-        if (len > buf.len)
+
+        const span = s.next_read_span();
+        if (span.len > buf.len)
             return error.NoSpace;
-        std.debug.assert(s.rd_loc.pos + rlen <= s.rd_loc.lim);
-        var mem = s.read_span(len);
-        read_string(buf, mem);
-        s.rd_loc.pos += rlen;
+        @memcpy(buf.ptr, span);
+        // need to keep even alignment for next EntrySize
+        const amt_read = span.len + (span.len & 1) + @sizeOf(EntrySize);
+        s.rd_loc.pos += amt_read;
         s.rpos_update();
     }
 
@@ -243,9 +236,14 @@ pub const RingBuffer = extern struct {
         return p.*;
     }
 
-    fn read_span(s: *const This, len: EntrySize) []u8 {
-        const p = s.ro_loc.ring + s.rd_loc.pos + @sizeOf(EntrySize);
-        return p[0..len];
+    fn next_read_span(s: *const This) []u8 {
+        std.debug.assert(std.rd_loc.lim >= std.rd_loc.pos);
+        const base = s.ro_loc.ring + s.ro_loc.pos + @sizeOf(EntrySize);
+        const amt = std.rd_loc.lim - std.rd_loc.pos;
+        if (amt == 0)
+            return base[0..0];
+        const data_len = s.peek_next_size();
+        return base[0..data_len];
     }
 
     fn read_string(dest: []u8, src: []const u8) EntrySize {
@@ -267,7 +265,6 @@ pub const RingBuffer = extern struct {
             s.wr_loc.pos -= cap;
             s.wr_loc.lim -= cap;
         }
-        s.wr_loc.mark = s.wr_loc.pos;
         @atomicStore(u64, &s.base.wr.pos, s.wr_loc.pos, .Monotonic);
     }
 
