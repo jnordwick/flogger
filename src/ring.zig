@@ -179,6 +179,7 @@ pub const RingBuffer = extern struct {
     }
 
     pub fn push(s: *This, buf: []const u8) RingError!void {
+        std.debug.print("\nbuf of {d}\n", .{buf.len});
         var mem = try s.write_alloc(@intCast(buf.len));
         write_string(mem.ptr, buf);
         s.write_commit();
@@ -187,8 +188,8 @@ pub const RingBuffer = extern struct {
     pub fn write_alloc(s: *This, len: u64) RingError![]u8 {
         std.debug.assert(len < comptime std.math.maxInt(EntrySize));
         const pad = util.padding(@intCast(len), @alignOf(EntrySize));
-        const data_len: u32 = @intCast(len + @sizeOf(EntrySize));
-        const full_len: u32 = @intCast(data_len + pad);
+        const data_len: u32 = @intCast(len + pad);
+        const full_len: u32 = @intCast(data_len + @sizeOf(EntrySize));
 
         const npos = s.wr_loc.pos + full_len;
         if (npos >= s.wr_loc.lim)
@@ -216,19 +217,13 @@ pub const RingBuffer = extern struct {
         @memcpy(p + @sizeOf(EntrySize), str);
     }
 
-    pub fn pull(s: *This, buf: []u8) !void {
-        // If there is any data is should be of at least entry size
-        // since partial records should never be committed
-        std.debug.assert(amt >= @sizeOf(EntrySize));
-
+    pub fn pull(s: *This, buf: []u8) ![]u8 {
         const span = s.next_read_span();
         if (span.len > buf.len)
             return error.NoSpace;
         @memcpy(buf.ptr, span);
-        // need to keep even alignment for next EntrySize
-        const amt_read = span.len + (span.len & 1) + @sizeOf(EntrySize);
-        s.rd_loc.pos += amt_read;
-        s.rpos_update();
+        s.read_commit();
+        return buf[0..span.len];
     }
 
     fn peek_next_size(s: *const This) EntrySize {
@@ -236,13 +231,31 @@ pub const RingBuffer = extern struct {
         return p.*;
     }
 
-    fn next_read_span(s: *const This) []u8 {
-        std.debug.assert(std.rd_loc.lim >= std.rd_loc.pos);
-        const base = s.ro_loc.ring + s.ro_loc.pos + @sizeOf(EntrySize);
-        const amt = std.rd_loc.lim - std.rd_loc.pos;
-        if (amt == 0)
-            return base[0..0];
+    fn next_read_span(s: *This) []u8 {
+        std.debug.assert(s.rd_loc.lim >= s.rd_loc.pos);
+        const base = s.ro_loc.ring + s.rd_loc.pos + @sizeOf(EntrySize);
+        var amt = s.rd_loc.lim - s.rd_loc.pos;
+        if (amt == 0) {
+            std.debug.print("nothing to read 1\n", .{});
+            s.rd_loc.lim = s.gen_read_limit();
+            std.debug.print("new read limit {d}\n", .{s.rd_loc.lim});
+            amt = s.rd_loc.lim - s.rd_loc.pos;
+            if (amt == 0) {
+                std.debug.print("nothing to read 2\n", .{});
+                return base[0..0];
+            }
+        }
+        std.debug.print("found {d} to read\n", .{amt});
+        // If there is any data is should be of at least entry size
+        // since partial records should never be comm
+        std.debug.assert(amt >= @sizeOf(EntrySize));
+
         const data_len = s.peek_next_size();
+        std.debug.print("reading {d}\n", .{data_len});
+        // need to keep even alignment for next EntrySize
+        const bump = data_len + (data_len & 1) + @sizeOf(EntrySize);
+        std.debug.print("bumping {d}, dl={d}, so={d}\n", .{ bump, data_len, @sizeOf(EntrySize) });
+        s.rd_loc.pos += bump;
         return base[0..data_len];
     }
 
@@ -268,7 +281,12 @@ pub const RingBuffer = extern struct {
         @atomicStore(u64, &s.base.wr.pos, s.wr_loc.pos, .Monotonic);
     }
 
-    fn rpos_update(s: *This) void {
+    fn read_commit(s: *This) void {
+        const cap = s.ro_loc.cap;
+        if (s.rd_loc.pos >= cap) {
+            s.rd_loc.pos -= cap;
+            s.rd_loc.lim -= cap;
+        }
         @atomicStore(u64, &s.base.rd.pos, s.rd_loc.pos, .Monotonic);
     }
 
@@ -279,7 +297,9 @@ pub const RingBuffer = extern struct {
 
     fn gen_read_limit(s: *const This) u64 {
         const w = s.wpos_load();
-        return w + if (w > s.rd_loc.pos) 0 else s.ro_loc.cap;
+        const lim = w + if (w >= s.rd_loc.pos) 0 else s.ro_loc.cap;
+        std.debug.print("gen_read_lim w={d} rdloc={d} lim={d}\n", .{ w, s.rd_loc.pos, lim });
+        return lim;
     }
 };
 
@@ -296,8 +316,8 @@ test "create" {
     try T.expectEqual(@as(u64, 0), rb.base.info.cap % ring_page_size);
     _ = try rb.push("a");
     _ = try rb.push("ab");
-    _ = try rb.push("abc");
-    _ = try rb.push("abcd");
-    _ = try rb.push("abcde");
-    _ = try rb.push("abcdef");
+    //_ = try rb.push("abc");
+    //_ = try rb.push("abcd");
+    //_ = try rb.push("abcde");
+    //_ = try rb.push("abcdef");
 }

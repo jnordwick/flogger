@@ -24,13 +24,16 @@ fn pp(comptime s: []const u8, a: anytype) Prt {
 }
 
 pub fn main() !void {
-    var buf = [_]u8{0} ** 512;
-    _ = buf;
     p("mapping file...");
-    const rb = try ring.RingBuffer.mapname(fname);
+    var rb = try ring.RingBuffer.mapname(fname);
     print("mapped file... cap={} rd={} wr={}\n", .{
         rb.base.info.cap,
         rb.base.rd.pos,
         rb.base.wr.pos,
     });
+    var abuf: [100]u8 = undefined;
+    var sbuf: []u8 = &abuf;
+    print("pulling\n", .{});
+    const d = try rb.pull(sbuf);
+    print("pulled {d} {s}\n", .{ d.len, d });
 }
