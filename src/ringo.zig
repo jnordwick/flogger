@@ -1,43 +1,55 @@
 const std = @import("std");
 const os = std.os;
 
-const unix = std.os.linux;
-
 const util = @import("./util.zig");
 
-const huge_page_size = 2 * 1024 * 1024;
+const header_page_size = 4 * 1024;
+const ring_page_size = 4 * 1024;
 const cache_line_size = 64;
 
-const RingError = error{RingFull};
+const RingError = error{NoSpace};
+
+const EntrySize = u16;
+
+// --- in file structs ---
+const Magic4 = util.Bytes(u32);
+const magicnum = Magic4{ .val = 1196379206 };
+
+const Header = extern struct {
+    const _pad_size = header_page_size - cache_line_size * 3;
+
+    info: InfoLine,
+    wr: SharedLine,
+    rd: SharedLine,
+    _pad: [_pad_size]u8 = [_]u8{0} ** _pad_size,
+
+    pub fn init(magic: u32, ver: u32, cap: u64, wpos: u64, rpos: u64) @This() {
+        return .{
+            .info = .{
+                .magic = magic,
+                .ver = ver,
+                .cap = cap,
+            },
+            .wr = .{ .pos = wpos },
+            .rd = .{ .pos = rpos },
+        };
+    }
+};
 
 const InfoLine = extern struct {
-    ring: [*]u8,
-    cap: u32,
-    fd: i32,
+    const _pad_size = cache_line_size - 4 - 4 - 8;
+
+    magic: u32,
+    ver: u32,
+    cap: u64,
+    _pad: [_pad_size]u8 = [_]u8{0} ** _pad_size,
 };
 
 const SharedLine = extern struct {
-    pos: u32,
-    _pad: [cache_line_size - 4]u8,
-};
+    const _pad_size = cache_line_size - 8;
 
-fn double_map(size: u322) ![*]u8 {
-    const rd = try std.posix.memfd_create("flogger", 0);
-}
-
-const Header = extern struct {
-    info: InfoLine,
-    w: SharedLine,
-    r: SharedLine,
-
-    pub fn init(_: u32) @This() {
-        const c: u32 = 4096;
-        return .{
-            .info = .{ .cap = c },
-            .w = .{ .pos = 0 },
-            .r = .{ .pos = 0 },
-        };
-    }
+    pos: u64,
+    _pad: [_pad_size]u8 = [_]u8{0} ** _pad_size,
 };
 
 // --- non file structs ---
